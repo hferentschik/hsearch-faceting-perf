@@ -62,10 +62,11 @@ import org.hibernate.search.query.facet.FacetSortOrder;
 import org.hibernate.search.query.facet.FacetingRequest;
 
 import static java.util.concurrent.TimeUnit.MICROSECONDS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 @BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(MICROSECONDS)
+@OutputTimeUnit(MILLISECONDS)
 @Warmup(iterations = 1, time = 1, timeUnit = SECONDS)
 @Measurement(iterations = 2, time = 1, timeUnit = SECONDS)
 @State(Scope.Benchmark)
