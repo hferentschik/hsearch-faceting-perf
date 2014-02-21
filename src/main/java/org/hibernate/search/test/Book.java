@@ -4,10 +4,12 @@ import java.util.HashSet;
 import java.util.Set;
 import javax.persistence.CascadeType;
 import javax.persistence.Entity;
+import javax.persistence.FetchType;
 import javax.persistence.GeneratedValue;
 import javax.persistence.Id;
 import javax.persistence.ManyToMany;
 
+import org.hibernate.search.annotations.Analyze;
 import org.hibernate.search.annotations.DocumentId;
 import org.hibernate.search.annotations.Field;
 import org.hibernate.search.annotations.Indexed;
@@ -23,18 +25,40 @@ public class Book {
 	private Integer id;
 
 	@Field
-	private String name;
+	private String title;
 
-	@ManyToMany(cascade = CascadeType.REMOVE)
+	@Field(analyze = Analyze.NO)
+	private String isbn;
+
+	@Field(analyze = Analyze.NO)
+	private String publisher;
+
+	@ManyToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER)
 	@IndexedEmbedded
 	private Set<Author> authors = new HashSet<Author>();
 
-	public String getName() {
-		return name;
+	public String getTitle() {
+		return title;
 	}
 
-	public void setName(String name) {
-		this.name = name;
+	public void setTitle(String title) {
+		this.title = title;
+	}
+
+	public String getIsbn() {
+		return isbn;
+	}
+
+	public void setIsbn(String isbn) {
+		this.isbn = isbn;
+	}
+
+	public String getPublisher() {
+		return publisher;
+	}
+
+	public void setPublisher(String publisher) {
+		this.publisher = publisher;
 	}
 
 	public Set<Author> getAuthors() {

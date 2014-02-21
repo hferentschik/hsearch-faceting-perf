@@ -1,9 +1,36 @@
 package org.hibernate.search.test;
 
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.core.StopAnalyzer;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.facet.params.CategoryListParams;
+import org.apache.lucene.facet.params.FacetIndexingParams;
+import org.apache.lucene.facet.params.FacetSearchParams;
+import org.apache.lucene.facet.search.CountFacetRequest;
+import org.apache.lucene.facet.search.FacetRequest;
+import org.apache.lucene.facet.search.FacetResult;
+import org.apache.lucene.facet.search.FacetsCollector;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesAccumulator;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetFields;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesReaderState;
+import org.apache.lucene.facet.taxonomy.CategoryPath;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.GenerateMicroBenchmark;
@@ -17,7 +44,10 @@ import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
-import org.hibernate.Session;
+import org.hibernate.CacheMode;
+import org.hibernate.FlushMode;
+import org.hibernate.ScrollMode;
+import org.hibernate.ScrollableResults;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
 import org.hibernate.cfg.Configuration;
@@ -37,21 +67,19 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 @OutputTimeUnit(MICROSECONDS)
 @Warmup(iterations = 2, time = 1, timeUnit = SECONDS)
 @Measurement(iterations = 2, time = 1, timeUnit = SECONDS)
-//@Fork(5)
 @State(Scope.Benchmark)
 @Threads(1)
 public class SearchFacetingPerformance {
+	private static final int BATCH_SIZE = 25;
+	private static final String NATIVE_LUCENE_INDEX_DIR = "native-lucene";
 	private SessionFactory sessionFactory;
-	private Author voltaire;
-	private Author hugo;
-	private Author moliere;
-	private Author proust;
 
 	@Setup
-	public void setUp() {
+	public void setUp() throws Exception {
 		Configuration configuration = buildConfiguration();
 		sessionFactory = configuration.buildSessionFactory();
-		createTestData();
+		createNativeLuceneIndex();
+		indexTestData();
 	}
 
 	@TearDown
@@ -71,24 +99,55 @@ public class SearchFacetingPerformance {
 				.onField( "authors.name_untokenized" )
 				.discrete()
 				.orderedBy( FacetSortOrder.COUNT_DESC )
-				.includeZeroCounts( false ).maxFacetCount( 10 )
+				.includeZeroCounts( false )
+				.maxFacetCount( 10 )
 				.createFacetingRequest();
 
 		List<Facet> facets = fullTextQuery.getFacetManager().enableFaceting( facetReq ).getFacets( "someFacet" );
-		assert ( facets.size() == 3 );
+		assert ( facets.size() == 10 );
 
 		fullTextSession.close();
 	}
 
 	@GenerateMicroBenchmark
-	public void luceneFaceting() {
-		hsearchFaceting();
+	public void luceneFaceting() throws Exception {
+		IndexSearcher searcher = getIndexSearcher();
+
+		// setup the facets
+		List<FacetRequest> facetRequests = new ArrayList<FacetRequest>();
+		facetRequests.add( new CountFacetRequest( new CategoryPath( "authors.name_untokenized" ), 10 ) );
+		FacetSearchParams facetSearchParams = new FacetSearchParams( new FacetIndexingParams(), facetRequests );
+		SortedSetDocValuesReaderState state = new SortedSetDocValuesReaderState(
+				new FacetIndexingParams( new CategoryListParams( "authors.name_untokenized" ) ),
+				searcher.getIndexReader()
+		);
+		FacetsCollector facetsCollector = FacetsCollector.create(
+				new SortedSetDocValuesAccumulator(
+						state,
+						facetSearchParams
+				)
+		);
+
+		// search
+		searcher.search( new MatchAllDocsQuery(), facetsCollector );
+
+		// get the facet result
+		List<FacetResult> facets = facetsCollector.getFacetResults();
+		assert ( facets != null );
 	}
 
+	// just for testing in the IDE
 	public static void main(String args[]) {
 		SearchFacetingPerformance performance = new SearchFacetingPerformance();
-		performance.setUp();
-		performance.hsearchFaceting();
+		try {
+			performance.setUp();
+			performance.hsearchFaceting();
+			performance.luceneFaceting();
+			performance.tearDown();
+		}
+		catch ( Exception e ) {
+			System.err.println( e.getMessage() );
+		}
 	}
 
 	private Configuration buildConfiguration() {
@@ -105,8 +164,8 @@ public class SearchFacetingPerformance {
 		cfg.setProperty( Environment.FORMAT_SQL, "false" );
 
 		// Search config
-		cfg.setProperty( "hibernate.search.lucene_version", Version.LUCENE_CURRENT.name() );
-		cfg.setProperty( "hibernate.search.default.directory_provider", "ram" );
+		cfg.setProperty( "hibernate.search.lucene_version", Version.LUCENE_46.name() );
+		cfg.setProperty( "hibernate.search.default.directory_provider", "filesystem" );
 		cfg.setProperty( org.hibernate.search.Environment.ANALYZER_CLASS, StopAnalyzer.class.getName() );
 		cfg.setProperty( "hibernate.search.default.indexwriter.merge_factor", "100" );
 		cfg.setProperty( "hibernate.search.default.indexwriter.max_buffered_docs", "1000" );
@@ -118,46 +177,104 @@ public class SearchFacetingPerformance {
 		return cfg;
 	}
 
+	private void indexTestData() throws Exception {
+		IndexWriter indexWriter = getIndexWriter();
 
-	public void createTestData() {
-		voltaire = new Author();
-		voltaire.setName( "Voltaire" );
+		FullTextSession fullTextSession = Search.getFullTextSession( sessionFactory.openSession() );
+		fullTextSession.setFlushMode( FlushMode.MANUAL );
+		fullTextSession.setCacheMode( CacheMode.IGNORE );
+		Transaction transaction = fullTextSession.beginTransaction();
+		ScrollableResults results = fullTextSession.createCriteria( Book.class )
+				.setFetchSize( BATCH_SIZE )
+				.scroll( ScrollMode.FORWARD_ONLY );
+		int index = 0;
+		while ( results.next() ) {
+			index++;
+			Book book = (Book) results.get( 0 );
+			indexBookHSearch( fullTextSession, book );
+			indexBookLucene( indexWriter, book );
+			if ( index % BATCH_SIZE == 0 ) {
+				fullTextSession.flushToIndexes();
+				fullTextSession.clear();
+			}
+		}
+		transaction.commit();
+		fullTextSession.close();
+	}
 
-		hugo = new Author();
-		hugo.setName( "Victor Hugo" );
+	private void indexBookHSearch(FullTextSession fullTextSession, Book book) {
+		fullTextSession.index( book );
+	}
 
-		moliere = new Author();
-		moliere.setName( "Moliere" );
+	private void indexBookLucene(IndexWriter writer, Book book) throws Exception {
+		Document document = new Document();
+		document.add( new TextField( "title", book.getTitle(), Field.Store.NO ) );
+		document.add( new StringField( "isbn", book.getIsbn(), Field.Store.NO ) );
+		document.add( new StringField( "publisher", book.getPublisher(), Field.Store.NO ) );
+		SortedSetDocValuesFacetFields dvFields = new SortedSetDocValuesFacetFields(
+				new FacetIndexingParams(
+						new CategoryListParams(
+								"authors.name_untokenized"
+						)
+				)
+		);
+		List<CategoryPath> paths = new ArrayList<CategoryPath>();
+		for ( Author author : book.getAuthors() ) {
+			String name = author.getName();
+			document.add( new TextField( "authors.name", name, Field.Store.NO ) );
+			paths.add( new CategoryPath( "authors.name_untokenized", name ) );
+		}
+		if ( paths.size() > 0 ) {
+			dvFields.addFields( document, paths );
+		}
+		writer.addDocument( document );
+		writer.commit();
+	}
 
-		proust = new Author();
-		proust.setName( "Proust" );
+	private void createNativeLuceneIndex() throws Exception {
+		boolean create = true;
+		File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+		if ( indexDirFile.exists() && indexDirFile.isDirectory() ) {
+			create = false;
+		}
 
-		Book book1 = new Book();
-		book1.setName( "Candide" );
-		book1.getAuthors().add( hugo );
-		book1.getAuthors().add( voltaire );
+		Directory dir = FSDirectory.open( indexDirFile );
+		Analyzer analyzer = new StandardAnalyzer( Version.LUCENE_46 );
+		IndexWriterConfig iwc = new IndexWriterConfig( Version.LUCENE_46, analyzer );
 
-		Book book2 = new Book();
-		book2.setName( "Amphitryon" );
-		book2.getAuthors().add( hugo );
-		book2.getAuthors().add( moliere );
+		if ( create ) {
+			// Create a new index in the directory, removing any
+			// previously indexed documents:
+			iwc.setOpenMode( IndexWriterConfig.OpenMode.CREATE );
+		}
 
-		Book book3 = new Book();
-		book3.setName( "Hernani" );
-		book3.getAuthors().add( hugo );
-		book3.getAuthors().add( moliere );
+		IndexWriter writer = new IndexWriter( dir, iwc );
+		writer.commit();
+		writer.close( true );
+	}
 
-		Session session = sessionFactory.openSession();
-		Transaction tx = session.beginTransaction();
-		session.persist( voltaire );
-		session.persist( hugo );
-		session.persist( moliere );
-		session.persist( proust );
-		session.persist( book1 );
-		session.persist( book2 );
-		session.persist( book3 );
+	private IndexWriter getIndexWriter() throws Exception {
+		File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+		Directory dir = FSDirectory.open( indexDirFile );
+		Analyzer analyzer = new StandardAnalyzer( Version.LUCENE_46 );
+		IndexWriterConfig iwc = new IndexWriterConfig( Version.LUCENE_46, analyzer );
+		iwc.setOpenMode( IndexWriterConfig.OpenMode.CREATE_OR_APPEND );
+		return new IndexWriter( dir, iwc );
+	}
 
-		tx.commit();
-		session.close();
+	private IndexSearcher getIndexSearcher() {
+		IndexReader indexReader;
+		IndexSearcher indexSearcher = null;
+		try {
+			File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+			Directory dir = FSDirectory.open( indexDirFile );
+			indexReader = DirectoryReader.open( dir );
+			indexSearcher = new IndexSearcher( indexReader );
+		}
+		catch ( IOException ioe ) {
+			ioe.printStackTrace();
+		}
+
+		return indexSearcher;
 	}
 }
