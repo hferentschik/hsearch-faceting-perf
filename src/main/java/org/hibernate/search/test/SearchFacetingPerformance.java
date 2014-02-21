@@ -33,6 +33,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.GenerateMicroBenchmark;
 import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
@@ -65,14 +66,16 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(MICROSECONDS)
-@Warmup(iterations = 2, time = 1, timeUnit = SECONDS)
+@Warmup(iterations = 1, time = 1, timeUnit = SECONDS)
 @Measurement(iterations = 2, time = 1, timeUnit = SECONDS)
 @State(Scope.Benchmark)
+@Fork(5)
 @Threads(1)
 public class SearchFacetingPerformance {
 	private static final int BATCH_SIZE = 25;
 	private static final String NATIVE_LUCENE_INDEX_DIR = "native-lucene";
 	private SessionFactory sessionFactory;
+	private IndexSearcher searcher;
 
 	@Setup
 	public void setUp() throws Exception {
@@ -80,6 +83,7 @@ public class SearchFacetingPerformance {
 		sessionFactory = configuration.buildSessionFactory();
 		createNativeLuceneIndex();
 		indexTestData();
+		searcher = getIndexSearcher();
 	}
 
 	@TearDown
@@ -111,8 +115,6 @@ public class SearchFacetingPerformance {
 
 	@GenerateMicroBenchmark
 	public void luceneFaceting() throws Exception {
-		IndexSearcher searcher = getIndexSearcher();
-
 		// setup the facets
 		List<FacetRequest> facetRequests = new ArrayList<FacetRequest>();
 		facetRequests.add( new CountFacetRequest( new CategoryPath( "authors.name_untokenized" ), 10 ) );
