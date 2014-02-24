@@ -61,9 +61,9 @@ import org.hibernate.search.query.facet.Facet;
 import org.hibernate.search.query.facet.FacetSortOrder;
 import org.hibernate.search.query.facet.FacetingRequest;
 
-import static java.util.concurrent.TimeUnit.MICROSECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertEquals;
 
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(MILLISECONDS)
@@ -75,6 +75,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 public class SearchFacetingPerformance {
 	private static final int BATCH_SIZE = 25;
 	private static final String NATIVE_LUCENE_INDEX_DIR = "native-lucene";
+	private static final String HSEARCH_LUCENE_INDEX_DIR = "hsearch-lucene";
+	private static final String AUTHOR_NAME_FACET = "authorNameFacet";
 	private SessionFactory sessionFactory;
 	private IndexSearcher searcher;
 
@@ -82,8 +84,10 @@ public class SearchFacetingPerformance {
 	public void setUp() throws Exception {
 		Configuration configuration = buildConfiguration();
 		sessionFactory = configuration.buildSessionFactory();
-		createNativeLuceneIndex();
-		indexTestData();
+		if ( needsIndexing() ) {
+			createNativeLuceneIndex();
+			indexTestData();
+		}
 		searcher = getIndexSearcher();
 	}
 
@@ -100,7 +104,7 @@ public class SearchFacetingPerformance {
 
 		QueryBuilder builder = fullTextSession.getSearchFactory().buildQueryBuilder().forEntity( Book.class ).get();
 		FacetingRequest facetReq = builder.facet()
-				.name( "someFacet" )
+				.name( AUTHOR_NAME_FACET )
 				.onField( "authors.name_untokenized" )
 				.discrete()
 				.orderedBy( FacetSortOrder.COUNT_DESC )
@@ -108,8 +112,10 @@ public class SearchFacetingPerformance {
 				.maxFacetCount( 10 )
 				.createFacetingRequest();
 
-		List<Facet> facets = fullTextQuery.getFacetManager().enableFaceting( facetReq ).getFacets( "someFacet" );
-		assert ( facets.size() == 10 );
+		List<Facet> facets = fullTextQuery.getFacetManager().enableFaceting( facetReq ).getFacets( AUTHOR_NAME_FACET );
+		assertEquals( "Wrong facet count", 10, facets.size() );
+		assertEquals( "Wrong facet ", "Ellison, Ralph", facets.get( 0 ).getValue() );
+		assertEquals( "Wrong facet value count", 19, facets.get( 0 ).getCount() );
 
 		fullTextSession.close();
 	}
@@ -118,7 +124,7 @@ public class SearchFacetingPerformance {
 	public void luceneFaceting() throws Exception {
 		// setup the facets
 		List<FacetRequest> facetRequests = new ArrayList<FacetRequest>();
-		facetRequests.add( new CountFacetRequest( new CategoryPath( "authors.name_untokenized" ), 10 ) );
+		facetRequests.add( new CountFacetRequest( new CategoryPath( "authors.name_untokenized" ), 1 ) );
 		FacetSearchParams facetSearchParams = new FacetSearchParams( new FacetIndexingParams(), facetRequests );
 		SortedSetDocValuesReaderState state = new SortedSetDocValuesReaderState(
 				new FacetIndexingParams( new CategoryListParams( "authors.name_untokenized" ) ),
@@ -136,7 +142,19 @@ public class SearchFacetingPerformance {
 
 		// get the facet result
 		List<FacetResult> facets = facetsCollector.getFacetResults();
-		assert ( facets != null );
+		assertEquals( "Wrong facet count", 1, facets.size() );
+		FacetResult topFacetResult = facets.get( 0 );
+
+		assertEquals(
+				"Wrong facet ",
+				"Ellison, Ralph",
+				topFacetResult.getFacetResultNode().subResults.get( 0 ).label.components[1]
+		);
+		assertEquals(
+				"Wrong facet value count",
+				19,
+				(int) topFacetResult.getFacetResultNode().subResults.get( 0 ).value
+		);
 	}
 
 	// just for testing in the IDE
@@ -150,6 +168,7 @@ public class SearchFacetingPerformance {
 		}
 		catch ( Exception e ) {
 			System.err.println( e.getMessage() );
+			e.printStackTrace();
 		}
 	}
 
@@ -157,18 +176,26 @@ public class SearchFacetingPerformance {
 		Configuration cfg = new Configuration();
 
 		// ORM config
-		cfg.setProperty( Environment.DIALECT, "org.hibernate.dialect.H2Dialect" );
-		cfg.setProperty( Environment.DRIVER, "org.h2.Driver" );
-		cfg.setProperty( Environment.URL, "jdbc:h2:mem:db1;DB_CLOSE_DELAY=-1" );
-		cfg.setProperty( Environment.USER, "sa" );
-		cfg.setProperty( Environment.PASS, "" );
-		cfg.setProperty( Environment.HBM2DDL_AUTO, "create-drop" );
+//		cfg.setProperty( Environment.DIALECT, "org.hibernate.dialect.H2Dialect" );
+//		cfg.setProperty( Environment.DRIVER, "org.h2.Driver" );
+//		cfg.setProperty( Environment.URL, "jdbc:h2:mem:db1;DB_CLOSE_DELAY=-1" );
+//		cfg.setProperty( Environment.USER, "sa" );
+//		cfg.setProperty( Environment.PASS, "" );
+
+		cfg.setProperty( Environment.DIALECT, "org.hibernate.dialect.MySQL5InnoDBDialect" );
+		cfg.setProperty( Environment.DRIVER, "com.mysql.jdbc.Driver" );
+		cfg.setProperty( Environment.URL, "jdbc:mysql://localhost/hibernate" );
+		cfg.setProperty( Environment.USER, "hibernate" );
+		cfg.setProperty( Environment.PASS, "hibernate" );
+
+//		cfg.setProperty( Environment.HBM2DDL_AUTO, "create" );
 		cfg.setProperty( Environment.SHOW_SQL, "false" );
 		cfg.setProperty( Environment.FORMAT_SQL, "false" );
 
 		// Search config
 		cfg.setProperty( "hibernate.search.lucene_version", Version.LUCENE_46.name() );
 		cfg.setProperty( "hibernate.search.default.directory_provider", "filesystem" );
+		cfg.setProperty( "hibernate.search.default.indexBase", HSEARCH_LUCENE_INDEX_DIR );
 		cfg.setProperty( org.hibernate.search.Environment.ANALYZER_CLASS, StopAnalyzer.class.getName() );
 		cfg.setProperty( "hibernate.search.default.indexwriter.merge_factor", "100" );
 		cfg.setProperty( "hibernate.search.default.indexwriter.max_buffered_docs", "1000" );
@@ -232,6 +259,20 @@ public class SearchFacetingPerformance {
 		}
 		writer.addDocument( document );
 		writer.commit();
+	}
+
+	private boolean needsIndexing() {
+		File nativeLuceneIndexDir = new File( NATIVE_LUCENE_INDEX_DIR );
+		if ( !nativeLuceneIndexDir.exists() ) {
+			return true;
+		}
+
+		File hsearchLuceneIndexDir = new File( HSEARCH_LUCENE_INDEX_DIR );
+		if ( !hsearchLuceneIndexDir.exists() ) {
+			return true;
+		}
+
+		return false;
 	}
 
 	private void createNativeLuceneIndex() throws Exception {
