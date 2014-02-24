@@ -21,16 +21,16 @@ end
 @book_id_to_author_id = Hash.new
 @author_id_to_int_id = Hash.new
 
-data = JSON.parse(IO.read("books.json"))
+data = JSON.parse(IO.read(ARGV[0]))
 data.each do |book|
-  values = {:book_id => @book_id, :isbn => book['isbn13'], :title => book['title'], :publisher => book['publisher_text']}
+  values = {:book_id => @book_id, :isbn => book['isbn13'], :title => book['title'].gsub("'", "''"), :publisher => book['publisher_text'].gsub("'", "''")  }
   @book_inserts << BOOK_INSERT_SQL % values
   @book_id += 1
 
   book['author_data'].each do |author|
     author_id = get_author_id author['id']
     if author_id == @author_id
-      values = {:author_id => author_id, :name => author['name']}
+      values = {:author_id => author_id, :name => author['name'].gsub("'", "''")}
       @author_inserts << AUTHOR_INSERT_SQL % values
       @author_id += 1
     end

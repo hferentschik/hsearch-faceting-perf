@@ -1,0 +1,9 @@
+---
+jobs:
+- name: Manning
+  status: in progress
+  pages_downloaded: 410
+  query:
+    q: Manning
+    i: combined
+  out: manning.json
