@@ -114,8 +114,8 @@ public class SearchFacetingPerformance {
 
 		List<Facet> facets = fullTextQuery.getFacetManager().enableFaceting( facetReq ).getFacets( AUTHOR_NAME_FACET );
 		assertEquals( "Wrong facet count", 10, facets.size() );
-		assertEquals( "Wrong facet ", "Ellison, Ralph", facets.get( 0 ).getValue() );
-		assertEquals( "Wrong facet value count", 19, facets.get( 0 ).getCount() );
+		assertEquals( "Wrong facet ", "Bittinger, Marvin L.", facets.get( 0 ).getValue() );
+		assertEquals( "Wrong facet value count", 169, facets.get( 0 ).getCount() );
 
 		fullTextSession.close();
 	}
@@ -147,12 +147,12 @@ public class SearchFacetingPerformance {
 
 		assertEquals(
 				"Wrong facet ",
-				"Ellison, Ralph",
+				"Bittinger, Marvin L.",
 				topFacetResult.getFacetResultNode().subResults.get( 0 ).label.components[1]
 		);
 		assertEquals(
 				"Wrong facet value count",
-				19,
+				169,
 				(int) topFacetResult.getFacetResultNode().subResults.get( 0 ).value
 		);
 	}

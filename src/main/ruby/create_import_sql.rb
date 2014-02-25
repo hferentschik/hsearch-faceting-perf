@@ -21,7 +21,11 @@ end
 @book_id_to_author_id = Hash.new
 @author_id_to_int_id = Hash.new
 
-data = JSON.parse(IO.read(ARGV[0]))
+json_file = ARGV[0]
+if json_file.nil? || !File.exist?(json_file)
+  abort("You need to specify an input file")
+end
+data = JSON.parse(IO.read(json_file))
 data.each do |book|
   values = {:book_id => @book_id, :isbn => book['isbn13'], :title => book['title'].gsub("'", "''"), :publisher => book['publisher_text'].gsub("'", "''")  }
   @book_inserts << BOOK_INSERT_SQL % values

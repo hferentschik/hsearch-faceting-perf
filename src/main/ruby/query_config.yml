@@ -1,9 +1,16 @@
 ---
 jobs:
 - name: Manning
-  status: in progress
-  pages_downloaded: 410
+  status: completed
+  pages_downloaded: 89
   query:
     q: Manning
-    i: combined
-  out: manning.json
+    i: publisher_name
+  out: publisher.json
+- name: Addison-Wesley
+  status: new
+  pages_downloaded: 912
+  query:
+    q: Addison-Wesley
+    i: publisher_name
+  out: publisher.json
