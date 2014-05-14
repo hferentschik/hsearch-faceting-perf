@@ -8,6 +8,7 @@ import org.hibernate.search.annotations.Analyze;
 import org.hibernate.search.annotations.DocumentId;
 import org.hibernate.search.annotations.Field;
 import org.hibernate.search.annotations.Fields;
+import org.hibernate.search.annotations.Store;
 
 @Entity
 public class Author {
@@ -16,7 +17,7 @@ public class Author {
 	@DocumentId
 	private Integer id;
 
-	@Fields({ @Field, @Field(analyze = Analyze.NO, name = "name_untokenized") })
+	@Fields({ @Field(store=Store.YES), @Field(analyze = Analyze.NO, name = "name_untokenized") })
 	private String name;
 
 
