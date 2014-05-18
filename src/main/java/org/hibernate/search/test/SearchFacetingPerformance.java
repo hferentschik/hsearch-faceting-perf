@@ -5,14 +5,40 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertEquals;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.core.StopAnalyzer;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.facet.params.CategoryListParams;
+import org.apache.lucene.facet.params.FacetIndexingParams;
+import org.apache.lucene.facet.params.FacetSearchParams;
+import org.apache.lucene.facet.search.CountFacetRequest;
+import org.apache.lucene.facet.search.FacetRequest;
+import org.apache.lucene.facet.search.FacetResult;
+import org.apache.lucene.facet.search.FacetsCollector;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesAccumulator;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetFields;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesReaderState;
+import org.apache.lucene.facet.taxonomy.CategoryPath;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.queryParser.MultiFieldQueryParser;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 import org.hibernate.CacheMode;
 import org.hibernate.FlushMode;
@@ -30,6 +56,10 @@ import org.hibernate.search.query.engine.spi.FacetManager;
 import org.hibernate.search.query.facet.Facet;
 import org.hibernate.search.query.facet.FacetSortOrder;
 import org.hibernate.search.query.facet.FacetingRequest;
+import org.hibernate.search.test.Author;
+import org.hibernate.search.test.Book;
+import org.hibernate.search.test.SearchAsyncTester;
+import org.hibernate.search.test.TestObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -56,23 +86,27 @@ import org.openjdk.jmh.annotations.Warmup;
 public class SearchFacetingPerformance {
     private static final int BATCH_SIZE = 250;
     private static final String HSEARCH_LUCENE_INDEX_DIR = "hsearch-lucene";
+    private static final String NATIVE_LUCENE_INDEX_DIR = "native-lucene";
+
     private static final String AUTHOR_NAME_FACET = "authorNameFacet";
     private static final String PUBLISHER_NAME_FACET = "publisherNameFacet";
     private static final String ISBN_NAME_FACET = "isbnFacet";
     private SessionFactory sessionFactory;
 
-    // private IndexSearcher searcher;
-    // private FullTextSession fullTextSession;
+     private IndexSearcher searcher;
+     private FullTextSession fullTextSession;
 
-    @Setup
+     @Setup
     @Before
     public void setUp() throws Exception {
         Configuration configuration = buildConfiguration();
         sessionFactory = configuration.buildSessionFactory();
         System.out.println("begin indexing");
         if (needsIndexing()) {
+            createNativeLuceneIndex();
             indexTestData();
         }
+        searcher = getIndexSearcher();
         System.out.println("complete indexing");
     }
 
@@ -109,6 +143,7 @@ public class SearchFacetingPerformance {
     @Test
     public void hsearchFacetingTest() throws Exception, InterruptedException {
 
+        // setup a bunch of queries, assert a couple of facet quantities
         List<TestObject> queries = new ArrayList<TestObject>();
         queries.add(new TestObject("title:{A TO L}", 1540, 930, 26960, 7179));
         queries.add(new TestObject("*:* or *:* or *:* or *:* and *:* or isbn:1*", -1, -1, -1, -1));
@@ -118,6 +153,8 @@ public class SearchFacetingPerformance {
         queries.add(new TestObject("isbn:{1 TO 5}", -1, -1, -1, -1));
         queries.add(new TestObject("book.authors:{A TO B}", -1, -1, -1, -1));
         queries.add(new TestObject("title:{A TO L}", 1540, 930, 26960, 7179));
+
+        // setup AsyncTester array
         final SearchAsyncTester[] testers = new SearchAsyncTester[queries.size()];
         final SearchFacetingPerformance perfTester = this;
         for (int i = 0; i < queries.size(); i++) {
@@ -127,16 +164,22 @@ public class SearchFacetingPerformance {
 
                 @Override
                 public void run() {
+
                     System.out.println(String.format("\n%s: Start: %s\n", query.getQuery(), System.currentTimeMillis()));
                     try {
+
+                        // run query
                         Object[] result = perfTester.buildQuery(query.getQuery());
                         System.out.println(String.format("\n%s: End: %s\n", query.getQuery(), System.currentTimeMillis()));
+
+                        // get the results  and the facets
                         FullTextQuery fullTextQuery = (FullTextQuery) result[0];
                         List<Facet> authorFacets = (List<Facet>) result[1];
                         List<Facet> publisherFacets = (List<Facet>) result[2];
                         System.out.println(String.format("%s: Total Results: %s", query, fullTextQuery.getResultSize()));
                         System.out.println(String.format("\t%s: %s -- %s", query.getQuery(), authorFacets.size(), authorFacets));
                         System.out.println(String.format("\t%s: %s -- %s", query.getQuery(), publisherFacets.size(), publisherFacets));
+                        // make assertions if values are != -1
                         if (query.getAuthorFacetCount() > -1) {
                             assertEquals(String.format("wrong a1 facet count %s != %s", query.getAuthorFacetCount(), authorFacets.get(0).getCount()),
                                     query.getAuthorFacetCount(), authorFacets.get(0).getCount());
@@ -159,21 +202,18 @@ public class SearchFacetingPerformance {
 
                 }
             });
+            // setup the thread
             testers[i].start();
             ;
         }
 
         for (SearchAsyncTester tester : testers) {
-            if (tester != null)
+            // run the test -- should be effectively simultaneous
+            if (tester != null) {
                 tester.test();
+            }
         }
 
-        // Object[] facets = buildQuery("title:Visual");
-        // assertEquals("Wrong facet count", 10, facets.size());
-        // assertEquals("Wrong facet ", "Bittinger, Marvin L.", facets.get(0).getValue());
-        // assertEquals("Wrong facet value count", 169, facets.get(0).getCount());
-
-        // fullTextSession.close();
     }
 
     public Object[] buildQuery(String query) throws Exception {
@@ -181,14 +221,14 @@ public class SearchFacetingPerformance {
         Transaction beginTransaction = fullTextSession.beginTransaction();
         // beginTransaction.begin();
 
-        org.apache.lucene.analysis.PerFieldAnalyzerWrapper analyzer = new org.apache.lucene.analysis.PerFieldAnalyzerWrapper(new StandardAnalyzer(
-                Version.LUCENE_36));
+        PerFieldAnalyzerWrapper analyzer = new PerFieldAnalyzerWrapper(new StandardAnalyzer(
+                Version.LUCENE_46));
 
-        MultiFieldQueryParser parser = new MultiFieldQueryParser(Version.LUCENE_36, new String[] { "title", "author.name" }, analyzer);
+        MultiFieldQueryParser parser = new MultiFieldQueryParser(Version.LUCENE_46, new String[] { "title", "author.name" }, analyzer);
         FullTextQuery fullTextQuery = fullTextSession.createFullTextQuery(parser.parse(query), Book.class);
 
-        fullTextQuery.setSort(new Sort(new SortField("publisher", SortField.STRING, true), new SortField("title", SortField.STRING), new SortField("isbn",
-                SortField.STRING, true)));
+        fullTextQuery.setSort(new Sort(new SortField("publisher", SortField.Type.STRING, true), new SortField("title", SortField.Type.STRING), new SortField("isbn",
+                SortField.Type.STRING, true)));
         fullTextQuery.setFirstResult(0);
         fullTextQuery.setMaxResults(1000);
 
@@ -213,19 +253,57 @@ public class SearchFacetingPerformance {
         return new Object[] { fullTextQuery, facets, facets2 };
     }
 
-    // just for testing in the IDE
+    @GenerateMicroBenchmark
+    public void luceneFaceting() throws Exception {
+        // setup the facets
+        List<FacetRequest> facetRequests = new ArrayList<FacetRequest>();
+        facetRequests.add( new CountFacetRequest( new CategoryPath( "authors.name_untokenized" ), 1 ) );
+        FacetSearchParams facetSearchParams = new FacetSearchParams( new FacetIndexingParams(), facetRequests );
+        SortedSetDocValuesReaderState state = new SortedSetDocValuesReaderState(
+                new FacetIndexingParams( new CategoryListParams( "authors.name_untokenized" ) ),
+                searcher.getIndexReader()
+        );
+        FacetsCollector facetsCollector = FacetsCollector.create(
+                new SortedSetDocValuesAccumulator(
+                        state,
+                        facetSearchParams
+                )
+        );
+
+        // search
+        searcher.search( new MatchAllDocsQuery(), facetsCollector );
+
+        // get the facet result
+        List<FacetResult> facets = facetsCollector.getFacetResults();
+        assertEquals( "Wrong facet count", 1, facets.size() );
+        FacetResult topFacetResult = facets.get( 0 );
+
+        assertEquals(
+                "Wrong facet ",
+                "Bittinger, Marvin L.",
+                topFacetResult.getFacetResultNode().subResults.get( 0 ).label.components[1]
+        );
+        assertEquals(
+                "Wrong facet value count",
+                169,
+                (int) topFacetResult.getFacetResultNode().subResults.get( 0 ).value
+        );
+    }
+
     public static void main(String args[]) {
         SearchFacetingPerformance performance = new SearchFacetingPerformance();
         try {
             performance.setUp();
             performance.hsearchFaceting();
-            // performance.luceneFaceting();
+            performance.luceneFaceting();
             performance.tearDown();
-        } catch (Exception e) {
-            System.err.println(e.getMessage());
+        }
+        catch ( Exception e ) {
+            System.err.println( e.getMessage() );
             e.printStackTrace();
         }
     }
+
 
     private Configuration buildConfiguration() {
         Configuration cfg = new Configuration();
@@ -254,12 +332,12 @@ public class SearchFacetingPerformance {
         cfg.setProperty(Environment.FORMAT_SQL, "false");
 
         // Search config
-        cfg.setProperty("hibernate.search.lucene_version", Version.LUCENE_36.name());
-        cfg.setProperty("hibernate.search.default.directory_provider", "filesystem");
-        cfg.setProperty("hibernate.search.default.indexBase", HSEARCH_LUCENE_INDEX_DIR);
-        // cfg.setProperty(org.hibernate.search.Environment.ANALYZER_CLASS, SimpleAnalyzer.class.getName());
-        // cfg.setProperty("hibernate.search.default.indexwriter.merge_factor", "100");
-        // cfg.setProperty("hibernate.search.default.indexwriter.max_buffered_docs", "1000");
+        cfg.setProperty( "hibernate.search.lucene_version", Version.LUCENE_46.name() );
+        cfg.setProperty( "hibernate.search.default.directory_provider", "filesystem" );
+        cfg.setProperty( "hibernate.search.default.indexBase", HSEARCH_LUCENE_INDEX_DIR );
+        cfg.setProperty( org.hibernate.search.Environment.ANALYZER_CLASS, StopAnalyzer.class.getName() );
+        cfg.setProperty( "hibernate.search.default.indexwriter.merge_factor", "100" );
+        cfg.setProperty( "hibernate.search.default.indexwriter.max_buffered_docs", "1000" );
 
         // configured classes
         cfg.addAnnotatedClass(Book.class);
@@ -282,6 +360,7 @@ public class SearchFacetingPerformance {
             index++;
             Book book = (Book) results.get(0);
             System.out.println(book.getTitle());
+            // let's make this a bit harder by putting lots more things in the lucene index
             indexBookHSearch(fullTextSession, book);
             add(fullTextSession, book, 1);
             add(fullTextSession, book, 2);
@@ -316,14 +395,89 @@ public class SearchFacetingPerformance {
         fullTextSession.flushToIndexes();
     }
 
-    private boolean needsIndexing() {
+    private void indexBookLucene(IndexWriter writer, Book book) throws Exception {
+        Document document = new Document();
+        document.add( new TextField( "title", book.getTitle(), Field.Store.NO ) );
+        document.add( new StringField( "isbn", book.getIsbn(), Field.Store.NO ) );
+        document.add( new StringField( "publisher", book.getPublisher(), Field.Store.NO ) );
+        SortedSetDocValuesFacetFields dvFields = new SortedSetDocValuesFacetFields(
+                new FacetIndexingParams(
+                        new CategoryListParams(
+                                "authors.name_untokenized"
+                        )
+                )
+        );
+        List<CategoryPath> paths = new ArrayList<CategoryPath>();
+        for ( Author author : book.getAuthors() ) {
+            String name = author.getName();
+            document.add( new TextField( "authors.name", name, Field.Store.NO ) );
+            paths.add( new CategoryPath( "authors.name_untokenized", name ) );
+        }
+        if ( paths.size() > 0 ) {
+            dvFields.addFields( document, paths );
+        }
+        writer.addDocument( document );
+        writer.commit();
+    }
 
-        File hsearchLuceneIndexDir = new File(HSEARCH_LUCENE_INDEX_DIR);
-        if (!hsearchLuceneIndexDir.exists()) {
+    private boolean needsIndexing() {
+        File nativeLuceneIndexDir = new File( NATIVE_LUCENE_INDEX_DIR );
+        if ( !nativeLuceneIndexDir.exists() ) {
+            return true;
+        }
+
+        File hsearchLuceneIndexDir = new File( HSEARCH_LUCENE_INDEX_DIR );
+        if ( !hsearchLuceneIndexDir.exists() ) {
             return true;
         }
 
         return false;
     }
 
+    private void createNativeLuceneIndex() throws Exception {
+        boolean create = true;
+        File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+        if ( indexDirFile.exists() && indexDirFile.isDirectory() ) {
+            create = false;
+        }
+
+        Directory dir = FSDirectory.open( indexDirFile );
+        Analyzer analyzer = new StandardAnalyzer( Version.LUCENE_46 );
+        IndexWriterConfig iwc = new IndexWriterConfig( Version.LUCENE_46, analyzer );
+
+        if ( create ) {
+            // Create a new index in the directory, removing any
+            // previously indexed documents:
+            iwc.setOpenMode( IndexWriterConfig.OpenMode.CREATE );
+        }
+
+        IndexWriter writer = new IndexWriter( dir, iwc );
+        writer.commit();
+        writer.close( true );
+    }
+
+    private IndexWriter getIndexWriter() throws Exception {
+        File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+        Directory dir = FSDirectory.open( indexDirFile );
+        Analyzer analyzer = new StandardAnalyzer( Version.LUCENE_46 );
+        IndexWriterConfig iwc = new IndexWriterConfig( Version.LUCENE_46, analyzer );
+        iwc.setOpenMode( IndexWriterConfig.OpenMode.CREATE_OR_APPEND );
+        return new IndexWriter( dir, iwc );
+    }
+
+    private IndexSearcher getIndexSearcher() {
+        IndexReader indexReader;
+        IndexSearcher indexSearcher = null;
+        try {
+            File indexDirFile = new File( NATIVE_LUCENE_INDEX_DIR );
+            Directory dir = FSDirectory.open( indexDirFile );
+            indexReader = DirectoryReader.open( dir );
+            indexSearcher = new IndexSearcher( indexReader );
+        }
+        catch ( IOException ioe ) {
+            ioe.printStackTrace();
+        }
+
+        return indexSearcher;
+    }
 }
