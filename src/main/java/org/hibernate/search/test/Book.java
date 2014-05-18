@@ -2,18 +2,22 @@ package org.hibernate.search.test;
 
 import java.util.HashSet;
 import java.util.Set;
+
 import javax.persistence.CascadeType;
 import javax.persistence.Entity;
 import javax.persistence.FetchType;
 import javax.persistence.GeneratedValue;
 import javax.persistence.Id;
+import javax.persistence.Lob;
 import javax.persistence.ManyToMany;
 
+import org.hibernate.annotations.Type;
 import org.hibernate.search.annotations.Analyze;
 import org.hibernate.search.annotations.DocumentId;
 import org.hibernate.search.annotations.Field;
 import org.hibernate.search.annotations.Indexed;
 import org.hibernate.search.annotations.IndexedEmbedded;
+import org.hibernate.search.annotations.Store;
 
 @Entity
 @Indexed
@@ -24,13 +28,15 @@ public class Book {
 	@DocumentId
 	private Integer id;
 
-	@Field
+	@Field(store=Store.YES)
+	@Lob
+	@Type(type = "org.hibernate.type.TextType")
 	private String title;
 
-	@Field(analyze = Analyze.NO)
+	@Field(analyze = Analyze.NO,store=Store.YES)
 	private String isbn;
 
-	@Field(analyze = Analyze.NO)
+	@Field(analyze = Analyze.NO,store=Store.YES)
 	private String publisher;
 
 	@ManyToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER)
@@ -68,6 +74,14 @@ public class Book {
 	public void setAuthors(Set<Author> authors) {
 		this.authors = authors;
 	}
+
+    public Integer getId() {
+        return id;
+    }
+
+    public void setId(Integer id) {
+        this.id = id;
+    }
 }
 
 
